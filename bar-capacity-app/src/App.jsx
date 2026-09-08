@@ -629,7 +629,12 @@ export default function BarCapacityMockup() {
           boxShadow: "0 30px 60px -20px rgba(0,0,0,0.6)",
         }}
       >
-        {view === "door" ? <DoorScreen /> : <ManagerScreen />}
+        <div style={{ display: view === "door" ? "block" : "none" }}>
+          <DoorScreen />
+        </div>
+        <div style={{ display: view === "manager" ? "block" : "none" }}>
+          <ManagerScreen />
+        </div>
       </div>
     </div>
   );
