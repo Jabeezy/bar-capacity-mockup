@@ -5,12 +5,17 @@ import {
   addLiveEntry,
   undoLatestLiveEntry,
   resetLiveShift,
+  subscribeLiveState,
 } from "./api.js";
 
-const LIVE_POLL_MS = 3000; // how often each device checks for other devices' changes
+// Backup poll in case the live stream silently drops without firing an
+// error event — rare, but cheap insurance. The stream itself is what
+// gives near-instant updates.
+const LIVE_SAFETY_POLL_MS = 20000;
 
 const MAX_CAPACITY = 200;
-const STAFF_NAME = "Name 1";
+const ADD_STAFF_NAME = "Name 1"; // attributed on every "+ Add people" tap
+const REMOVE_STAFF_NAME = "Name 2"; // attributed on every "− Remove people" tap
 const VENUE_NAME = "The Compass";
 
 function formatTime(date) {
@@ -64,9 +69,23 @@ function DoorScreen() {
   }
 
   useEffect(() => {
-    refreshLive();
-    const interval = setInterval(refreshLive, LIVE_POLL_MS);
-    return () => clearInterval(interval);
+    // Real-time push instead of polling — every device gets the update the
+    // instant anyone taps, and idle devices cost the server nothing (no
+    // repeated requests). Falls back to a slow safety-net poll in case the
+    // stream drops without a clean error.
+    const unsubscribe = subscribeLiveState({
+      onMessage: (liveState) => {
+        applyLiveState(liveState);
+        setSyncError(null);
+      },
+      onError: () => setSyncError("Live sync lost — reconnecting…"),
+      onOpen: () => setSyncError(null),
+    });
+    const safetyNet = setInterval(refreshLive, LIVE_SAFETY_POLL_MS);
+    return () => {
+      unsubscribe();
+      clearInterval(safetyNet);
+    };
   }, []);
 
   useEffect(() => {
@@ -77,12 +96,13 @@ function DoorScreen() {
 
   async function applyDelta(amount) {
     const signed = mode === "add" ? amount : -amount;
+    const staffName = mode === "add" ? ADD_STAFF_NAME : REMOVE_STAFF_NAME;
     inFlight.current = true;
     // Optimistic update so the person tapping sees an instant response;
-    // gets overwritten by the real server state a moment later.
+    // gets confirmed (or corrected) by the real server push a moment later.
     setCount((c) => Math.max(0, c + signed));
     try {
-      const liveState = await addLiveEntry({ name: STAFF_NAME, delta: signed });
+      const liveState = await addLiveEntry({ name: staffName, delta: signed });
       applyLiveState(liveState);
       setSyncError(null);
     } catch (err) {
@@ -127,7 +147,10 @@ function DoorScreen() {
     setSaveError(null);
     inFlight.current = true;
     try {
-      await resetLiveShift({ venue: VENUE_NAME, closedBy: STAFF_NAME });
+      // Whoever is in the active mode at the moment of reset is recorded as
+      // closing the shift.
+      const closedBy = mode === "add" ? ADD_STAFF_NAME : REMOVE_STAFF_NAME;
+      await resetLiveShift({ venue: VENUE_NAME, closedBy });
       setCount(0);
       setPeak(0);
       setLog([]);
@@ -180,7 +203,7 @@ function DoorScreen() {
             }}
           />
           <span style={{ color: "#C9CCD3", fontSize: 13, fontWeight: 500 }}>
-            {STAFF_NAME}
+            {mode === "add" ? ADD_STAFF_NAME : REMOVE_STAFF_NAME}
           </span>
         </div>
       </div>
