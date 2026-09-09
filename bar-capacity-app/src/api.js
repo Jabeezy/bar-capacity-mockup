@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_API_URL || "https://bar-capacity-mockup-production.up.railway.app";
 
 export async function saveShift({ venue, closedBy, peakCount, closingCount, entries }) {
   const res = await fetch(`${API_BASE}/api/shifts`, {
