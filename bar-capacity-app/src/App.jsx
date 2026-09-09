@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 
 const MAX_CAPACITY = 200;
-const STAFF_NAME = "Isaac";
+const STAFF_NAME = "Name 1";
 const VENUE_NAME = "The Compass";
 
 function formatTime(date) {
@@ -23,12 +23,12 @@ const PAST_SHIFTS = [
     peak: 187,
     closing: 0,
     entries: [
-      { name: "Isaac", delta: -187, time: "2:14 AM", isReset: true },
-      { name: "Tommy", delta: -12, time: "1:52 AM" },
-      { name: "Isaac", delta: -8, time: "1:30 AM" },
-      { name: "Tommy", delta: 15, time: "11:40 PM" },
-      { name: "Isaac", delta: 20, time: "10:58 PM" },
-      { name: "Isaac", delta: 20, time: "10:15 PM" },
+      { name: "Name 1", delta: -187, time: "2:14 AM", isReset: true },
+      { name: "Name 2", delta: -12, time: "1:52 AM" },
+      { name: "Name 1", delta: -8, time: "1:30 AM" },
+      { name: "Name 2", delta: 15, time: "11:40 PM" },
+      { name: "Name 1", delta: 20, time: "10:58 PM" },
+      { name: "Name 1", delta: 20, time: "10:15 PM" },
     ],
   },
   {
@@ -36,10 +36,10 @@ const PAST_SHIFTS = [
     peak: 203,
     closing: 0,
     entries: [
-      { name: "Tommy", delta: -203, time: "2:20 AM", isReset: true },
-      { name: "Tommy", delta: -6, time: "9:47 PM" },
-      { name: "Isaac", delta: 20, time: "9:42 PM" },
-      { name: "Isaac", delta: 8, time: "9:31 PM" },
+      { name: "Name 2", delta: -203, time: "2:20 AM", isReset: true },
+      { name: "Name 2", delta: -6, time: "9:47 PM" },
+      { name: "Name 1", delta: 20, time: "9:42 PM" },
+      { name: "Name 1", delta: 8, time: "9:31 PM" },
     ],
   },
   {
@@ -47,9 +47,9 @@ const PAST_SHIFTS = [
     peak: 154,
     closing: 0,
     entries: [
-      { name: "Isaac", delta: -154, time: "1:48 AM", isReset: true },
-      { name: "Isaac", delta: 10, time: "11:05 PM" },
-      { name: "Tommy", delta: 5, time: "10:20 PM" },
+      { name: "Name 1", delta: -154, time: "1:48 AM", isReset: true },
+      { name: "Name 1", delta: 10, time: "11:05 PM" },
+      { name: "Name 2", delta: 5, time: "10:20 PM" },
     ],
   },
 ];
