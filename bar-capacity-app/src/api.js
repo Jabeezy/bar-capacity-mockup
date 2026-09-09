@@ -61,3 +61,31 @@ export async function resetLiveShift({ venue, closedBy }) {
   if (!res.ok) throw new Error("Failed to reset shift");
   return res.json();
 }
+
+// Real-time push of the shared live state via Server-Sent Events — every
+// connected device gets updated the instant anyone adds/removes/undoes/
+// resets, no polling required. Returns an unsubscribe function.
+export function subscribeLiveState({ onMessage, onError, onOpen }) {
+  const source = new EventSource(`${API_BASE}/api/live/stream`);
+
+  source.onopen = () => {
+    onOpen?.();
+  };
+
+  source.onmessage = (event) => {
+    try {
+      const liveState = JSON.parse(event.data);
+      onMessage(liveState);
+    } catch (err) {
+      console.error("Bad live-state payload", err);
+    }
+  };
+
+  source.onerror = (err) => {
+    // EventSource retries the connection on its own — this just surfaces
+    // the "we're momentarily disconnected" state to the UI.
+    onError?.(err);
+  };
+
+  return () => source.close();
+}

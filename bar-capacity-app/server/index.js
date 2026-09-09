@@ -21,11 +21,6 @@ app.use(
   })
 );
 
-// Health check — useful for confirming Railway deployed correctly
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
-});
-
 // Turn an ordered list of live entries into { count, peak, entries } —
 // replayed in chronological order so peak reflects the true high-water mark.
 function deriveLiveState(rows) {
@@ -39,14 +34,62 @@ function deriveLiveState(rows) {
   return { count, peak, entries: entries.slice().reverse() }; // most recent first
 }
 
-// Current shared count for the shift in progress — polled by every door
-// staff device so they all see the same live number.
+async function getCurrentLiveState() {
+  const result = await pool.query(
+    `SELECT id, staff_name, delta, occurred_at FROM live_entries ORDER BY occurred_at ASC, id ASC`
+  );
+  return deriveLiveState(result.rows);
+}
+
+// --- Real-time push (Server-Sent Events) -----------------------------------
+// Every connected device (door staff phones, manager tab if it wants it)
+// gets pushed the fresh state the instant anything changes — no polling
+// delay, and idle devices cost nothing since there's no repeated request.
+const sseClients = new Set();
+
+function broadcastLiveState(liveState) {
+  const payload = `data: ${JSON.stringify(liveState)}\n\n`;
+  for (const client of sseClients) {
+    client.write(payload);
+  }
+}
+
+app.get("/api/live/stream", async (req, res) => {
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+  sseClients.add(res);
+
+  try {
+    const liveState = await getCurrentLiveState();
+    res.write(`data: ${JSON.stringify(liveState)}\n\n`);
+  } catch (err) {
+    console.error(err);
+  }
+
+  // Keep the connection alive through proxies/load balancers that would
+  // otherwise time out an idle HTTP connection.
+  const keepAlive = setInterval(() => res.write(":ping\n\n"), 25000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    sseClients.delete(res);
+  });
+});
+
+// Health check — useful for confirming Railway deployed correctly
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+// Current shared count for the shift in progress — used for the initial
+// load; after that, /api/live/stream pushes updates.
 app.get("/api/live", async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT id, staff_name, delta, occurred_at FROM live_entries ORDER BY occurred_at ASC, id ASC`
-    );
-    res.json(deriveLiveState(result.rows));
+    res.json(await getCurrentLiveState());
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch live state" });
@@ -54,7 +97,8 @@ app.get("/api/live", async (req, res) => {
 });
 
 // Record a single add/remove tap. Any device can call this — the response
-// is the freshly recomputed shared state.
+// is the freshly recomputed shared state, and every other connected device
+// gets the same state pushed to it immediately.
 app.post("/api/live/entries", async (req, res) => {
   const { name, delta } = req.body;
   if (!name || !Number.isFinite(delta) || delta === 0) {
@@ -65,10 +109,9 @@ app.post("/api/live/entries", async (req, res) => {
       `INSERT INTO live_entries (staff_name, delta, occurred_at) VALUES ($1, $2, now())`,
       [name, delta]
     );
-    const result = await pool.query(
-      `SELECT id, staff_name, delta, occurred_at FROM live_entries ORDER BY occurred_at ASC, id ASC`
-    );
-    res.status(201).json(deriveLiveState(result.rows));
+    const liveState = await getCurrentLiveState();
+    broadcastLiveState(liveState);
+    res.status(201).json(liveState);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to record entry" });
@@ -84,10 +127,9 @@ app.delete("/api/live/entries/latest", async (req, res) => {
          SELECT id FROM live_entries ORDER BY occurred_at DESC, id DESC LIMIT 1
        )`
     );
-    const result = await pool.query(
-      `SELECT id, staff_name, delta, occurred_at FROM live_entries ORDER BY occurred_at ASC, id ASC`
-    );
-    res.json(deriveLiveState(result.rows));
+    const liveState = await getCurrentLiveState();
+    broadcastLiveState(liveState);
+    res.json(liveState);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to undo entry" });
@@ -134,6 +176,7 @@ app.post("/api/live/reset", async (req, res) => {
 
     await client.query(`DELETE FROM live_entries`);
     await client.query("COMMIT");
+    broadcastLiveState({ count: 0, peak: 0, entries: [] });
     res.status(201).json({ shiftId });
   } catch (err) {
     await client.query("ROLLBACK");
