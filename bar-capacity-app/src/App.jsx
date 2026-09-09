@@ -1,12 +1,21 @@
-import React, { useState, useEffect } from "react";
-import { saveShift, fetchShifts } from "./api.js";
+import React, { useState, useEffect, useRef } from "react";
+import {
+  fetchShifts,
+  fetchLiveState,
+  addLiveEntry,
+  undoLatestLiveEntry,
+  resetLiveShift,
+} from "./api.js";
+
+const LIVE_POLL_MS = 3000; // how often each device checks for other devices' changes
 
 const MAX_CAPACITY = 200;
 const STAFF_NAME = "Name 1";
 const VENUE_NAME = "The Compass";
 
 function formatTime(date) {
-  return date.toLocaleTimeString("en-US", {
+  const d = date instanceof Date ? date : new Date(date);
+  return d.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -19,19 +28,46 @@ function stateForPercent(pct) {
 }
 
 function DoorScreen() {
+  // count/peak/log all come from the shared backend, not local-only state —
+  // every device polls the same live shift so two bouncers on two phones
+  // see the same running number.
   const [count, setCount] = useState(0);
+  const [peak, setPeak] = useState(0);
+  const [log, setLog] = useState([]);
   const [mode, setMode] = useState("add");
   const [custom, setCustom] = useState("");
-  const [log, setLog] = useState([]);
-  const [nightLog, setNightLog] = useState([]); // full, untruncated log for the current shift
-  const [peak, setPeak] = useState(0);
-  const [history, setHistory] = useState([]);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [syncError, setSyncError] = useState(null);
+  const inFlight = useRef(false); // guards against a poll landing mid-action and clobbering it
 
   const pct = Math.min(100, Math.round((count / MAX_CAPACITY) * 100));
   const state = stateForPercent(pct);
+
+  function applyLiveState(liveState) {
+    setCount(liveState.count);
+    setPeak(liveState.peak);
+    setLog(liveState.entries);
+  }
+
+  async function refreshLive() {
+    if (inFlight.current) return;
+    try {
+      const liveState = await fetchLiveState();
+      applyLiveState(liveState);
+      setSyncError(null);
+    } catch (err) {
+      console.error(err);
+      setSyncError("Can't reach the server — showing the last known count.");
+    }
+  }
+
+  useEffect(() => {
+    refreshLive();
+    const interval = setInterval(refreshLive, LIVE_POLL_MS);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!confirmingReset) return;
@@ -39,17 +75,23 @@ function DoorScreen() {
     return () => clearTimeout(t);
   }, [confirmingReset]);
 
-  function applyDelta(amount) {
+  async function applyDelta(amount) {
     const signed = mode === "add" ? amount : -amount;
-    const entry = { name: STAFF_NAME, delta: signed, time: new Date() };
-    setHistory((h) => [{ count, log }, ...h].slice(0, 20));
-    setCount((c) => {
-      const next = Math.max(0, c + signed);
-      setPeak((p) => Math.max(p, next));
-      return next;
-    });
-    setLog((l) => [entry, ...l].slice(0, 6));
-    setNightLog((l) => [entry, ...l]);
+    inFlight.current = true;
+    // Optimistic update so the person tapping sees an instant response;
+    // gets overwritten by the real server state a moment later.
+    setCount((c) => Math.max(0, c + signed));
+    try {
+      const liveState = await addLiveEntry({ name: STAFF_NAME, delta: signed });
+      applyLiveState(liveState);
+      setSyncError(null);
+    } catch (err) {
+      console.error(err);
+      setSyncError("Couldn't sync that tap — reconnecting…");
+      refreshLive();
+    } finally {
+      inFlight.current = false;
+    }
   }
 
   function applyCustom() {
@@ -59,17 +101,20 @@ function DoorScreen() {
     setCustom("");
   }
 
-  function undoLast() {
-    setHistory((h) => {
-      if (h.length === 0) return h;
-      const [previous, ...rest] = h;
-      setCount(previous.count);
-      setLog(previous.log);
-      // Note: nightLog intentionally keeps the undone entry out of the saved
-      // record would require more bookkeeping — for now undo only affects the
-      // live counter/log, not the saved shift history.
-      return rest;
-    });
+  async function undoLast() {
+    if (log.length === 0) return;
+    inFlight.current = true;
+    try {
+      const liveState = await undoLatestLiveEntry();
+      applyLiveState(liveState);
+      setSyncError(null);
+    } catch (err) {
+      console.error(err);
+      setSyncError("Couldn't undo — reconnecting…");
+      refreshLive();
+    } finally {
+      inFlight.current = false;
+    }
   }
 
   async function resetShift() {
@@ -80,24 +125,18 @@ function DoorScreen() {
     setConfirmingReset(false);
     setSaving(true);
     setSaveError(null);
+    inFlight.current = true;
     try {
-      await saveShift({
-        venue: VENUE_NAME,
-        closedBy: STAFF_NAME,
-        peakCount: peak,
-        closingCount: count,
-        entries: nightLog,
-      });
-      setHistory([]);
+      await resetLiveShift({ venue: VENUE_NAME, closedBy: STAFF_NAME });
       setCount(0);
       setPeak(0);
-      setNightLog([]);
-      setLog([{ name: STAFF_NAME, delta: 0, time: new Date(), isReset: true }]);
+      setLog([]);
     } catch (err) {
       console.error(err);
       setSaveError("Couldn't save shift — check your connection and try again.");
     } finally {
       setSaving(false);
+      inFlight.current = false;
     }
   }
 
@@ -158,14 +197,14 @@ function DoorScreen() {
       >
         <button
           onClick={undoLast}
-          disabled={history.length === 0}
+          disabled={log.length === 0}
           style={{
             border: "none",
             background: "none",
-            color: history.length === 0 ? "#3A3E48" : "#8B8F99",
+            color: log.length === 0 ? "#3A3E48" : "#8B8F99",
             fontSize: 13,
             fontWeight: 500,
-            cursor: history.length === 0 ? "default" : "pointer",
+            cursor: log.length === 0 ? "default" : "pointer",
             padding: "6px 0",
           }}
         >
@@ -192,7 +231,7 @@ function DoorScreen() {
         </button>
       </div>
 
-      {saveError && (
+      {(saveError || syncError) && (
         <div
           style={{
             margin: "0 20px",
@@ -205,7 +244,7 @@ function DoorScreen() {
             fontSize: 12,
           }}
         >
-          {saveError}
+          {saveError || syncError}
         </div>
       )}
 
