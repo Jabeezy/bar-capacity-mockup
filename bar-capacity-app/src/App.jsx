@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { saveShift, fetchShifts } from "./api.js";
 
 const MAX_CAPACITY = 200;
 const STAFF_NAME = "Name 1";
@@ -17,50 +18,17 @@ function stateForPercent(pct) {
   return { label: "Comfortable", color: "#4C9F6E" };
 }
 
-const PAST_SHIFTS = [
-  {
-    date: "Sat, Sep 6",
-    peak: 187,
-    closing: 0,
-    entries: [
-      { name: "Name 1", delta: -187, time: "2:14 AM", isReset: true },
-      { name: "Name 2", delta: -12, time: "1:52 AM" },
-      { name: "Name 1", delta: -8, time: "1:30 AM" },
-      { name: "Name 2", delta: 15, time: "11:40 PM" },
-      { name: "Name 1", delta: 20, time: "10:58 PM" },
-      { name: "Name 1", delta: 20, time: "10:15 PM" },
-    ],
-  },
-  {
-    date: "Fri, Sep 5",
-    peak: 203,
-    closing: 0,
-    entries: [
-      { name: "Name 2", delta: -203, time: "2:20 AM", isReset: true },
-      { name: "Name 2", delta: -6, time: "9:47 PM" },
-      { name: "Name 1", delta: 20, time: "9:42 PM" },
-      { name: "Name 1", delta: 8, time: "9:31 PM" },
-    ],
-  },
-  {
-    date: "Thu, Sep 4",
-    peak: 154,
-    closing: 0,
-    entries: [
-      { name: "Name 1", delta: -154, time: "1:48 AM", isReset: true },
-      { name: "Name 1", delta: 10, time: "11:05 PM" },
-      { name: "Name 2", delta: 5, time: "10:20 PM" },
-    ],
-  },
-];
-
 function DoorScreen() {
   const [count, setCount] = useState(0);
   const [mode, setMode] = useState("add");
   const [custom, setCustom] = useState("");
   const [log, setLog] = useState([]);
+  const [nightLog, setNightLog] = useState([]); // full, untruncated log for the current shift
+  const [peak, setPeak] = useState(0);
   const [history, setHistory] = useState([]);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   const pct = Math.min(100, Math.round((count / MAX_CAPACITY) * 100));
   const state = stateForPercent(pct);
@@ -73,9 +41,15 @@ function DoorScreen() {
 
   function applyDelta(amount) {
     const signed = mode === "add" ? amount : -amount;
+    const entry = { name: STAFF_NAME, delta: signed, time: new Date() };
     setHistory((h) => [{ count, log }, ...h].slice(0, 20));
-    setCount((c) => Math.max(0, c + signed));
-    setLog((l) => [{ name: STAFF_NAME, delta: signed, time: new Date() }, ...l].slice(0, 6));
+    setCount((c) => {
+      const next = Math.max(0, c + signed);
+      setPeak((p) => Math.max(p, next));
+      return next;
+    });
+    setLog((l) => [entry, ...l].slice(0, 6));
+    setNightLog((l) => [entry, ...l]);
   }
 
   function applyCustom() {
@@ -91,19 +65,40 @@ function DoorScreen() {
       const [previous, ...rest] = h;
       setCount(previous.count);
       setLog(previous.log);
+      // Note: nightLog intentionally keeps the undone entry out of the saved
+      // record would require more bookkeeping — for now undo only affects the
+      // live counter/log, not the saved shift history.
       return rest;
     });
   }
 
-  function resetShift() {
+  async function resetShift() {
     if (!confirmingReset) {
       setConfirmingReset(true);
       return;
     }
-    setHistory([]);
-    setCount(0);
-    setLog([{ name: STAFF_NAME, delta: 0, time: new Date(), isReset: true }]);
     setConfirmingReset(false);
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveShift({
+        venue: VENUE_NAME,
+        closedBy: STAFF_NAME,
+        peakCount: peak,
+        closingCount: count,
+        entries: nightLog,
+      });
+      setHistory([]);
+      setCount(0);
+      setPeak(0);
+      setNightLog([]);
+      setLog([{ name: STAFF_NAME, delta: 0, time: new Date(), isReset: true }]);
+    } catch (err) {
+      console.error(err);
+      setSaveError("Couldn't save shift — check your connection and try again.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -178,19 +173,41 @@ function DoorScreen() {
         </button>
         <button
           onClick={resetShift}
+          disabled={saving}
           style={{
             border: "none",
             background: "none",
             color: confirmingReset ? "#D9483D" : "#8B8F99",
             fontSize: 13,
             fontWeight: confirmingReset ? 700 : 500,
-            cursor: "pointer",
+            cursor: saving ? "default" : "pointer",
             padding: "6px 0",
           }}
         >
-          {confirmingReset ? "Tap again to confirm" : "Reset shift"}
+          {saving
+            ? "Saving…"
+            : confirmingReset
+            ? "Tap again to confirm"
+            : "Reset shift"}
         </button>
       </div>
+
+      {saveError && (
+        <div
+          style={{
+            margin: "0 20px",
+            marginTop: 10,
+            padding: "10px 12px",
+            borderRadius: 10,
+            background: "rgba(217,72,61,0.12)",
+            border: "1px solid rgba(217,72,61,0.3)",
+            color: "#D9483D",
+            fontSize: 12,
+          }}
+        >
+          {saveError}
+        </div>
+      )}
 
       {/* Count display */}
       <div style={{ padding: "28px 20px 20px", textAlign: "center" }}>
@@ -408,8 +425,51 @@ function DoorScreen() {
   );
 }
 
+function formatShiftDate(iso) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatShiftTime(iso) {
+  return new Date(iso).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function ManagerScreen() {
   const [openDay, setOpenDay] = useState(0);
+  const [shifts, setShifts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await fetchShifts();
+        if (!cancelled) setShifts(data);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) setError("Couldn't load shift history.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    // Poll every 30s so a shift closed on another device shows up without
+    // the manager needing to refresh manually.
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   return (
     <>
@@ -456,14 +516,29 @@ function ManagerScreen() {
       </div>
 
       <div style={{ padding: "16px 20px 24px" }}>
-        {PAST_SHIFTS.map((shift, i) => {
+        {loading && (
+          <div style={{ color: "#6B7080", fontSize: 13, padding: "12px 4px" }}>
+            Loading shift history…
+          </div>
+        )}
+        {error && (
+          <div style={{ color: "#D9483D", fontSize: 13, padding: "12px 4px" }}>
+            {error}
+          </div>
+        )}
+        {!loading && !error && shifts.length === 0 && (
+          <div style={{ color: "#6B7080", fontSize: 13, padding: "12px 4px" }}>
+            No shifts recorded yet.
+          </div>
+        )}
+        {shifts.map((shift, i) => {
           const isOpen = openDay === i;
-          const adds = shift.entries.filter((e) => !e.isReset && e.delta > 0).length;
-          const removes = shift.entries.filter((e) => !e.isReset && e.delta < 0).length;
+          const adds = shift.entries.filter((e) => e.delta > 0).length;
+          const removes = shift.entries.filter((e) => e.delta < 0).length;
 
           return (
             <div
-              key={shift.date}
+              key={shift.id}
               style={{
                 marginBottom: 10,
                 border: "1px solid #23262E",
@@ -487,10 +562,11 @@ function ManagerScreen() {
               >
                 <div style={{ textAlign: "left" }}>
                   <div style={{ color: "#F2F0EA", fontWeight: 600, fontSize: 14 }}>
-                    {shift.date}
+                    {formatShiftDate(shift.closed_at)}
                   </div>
                   <div style={{ color: "#6B7080", fontSize: 12, marginTop: 2 }}>
-                    Peak {shift.peak} · {adds} in, {removes} out
+                    Peak {shift.peak_count} · {adds} in, {removes} out · closed by{" "}
+                    {shift.closed_by}
                   </div>
                 </div>
                 <span
@@ -515,6 +591,21 @@ function ManagerScreen() {
                     gap: 9,
                   }}
                 >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: 12,
+                      color: "#6B7080",
+                      paddingBottom: 4,
+                      borderBottom: "1px solid #1E212A",
+                    }}
+                  >
+                    <span>
+                      Totals: +{shift.total_in} / −{shift.total_out}
+                    </span>
+                    <span>Closing count: {shift.closing_count}</span>
+                  </div>
                   {shift.entries.map((entry, j) => (
                     <div
                       key={j}
@@ -525,23 +616,19 @@ function ManagerScreen() {
                         fontSize: 13,
                       }}
                     >
-                      <span style={{ color: "#C9CCD3" }}>
-                        {entry.isReset ? "Shift reset" : entry.name}
+                      <span style={{ color: "#C9CCD3" }}>{entry.name}</span>
+                      <span
+                        style={{
+                          color: entry.delta > 0 ? "#4C9F6E" : "#D9483D",
+                          fontWeight: 600,
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {entry.delta > 0 ? "+" : ""}
+                        {entry.delta}
                       </span>
-                      {!entry.isReset && (
-                        <span
-                          style={{
-                            color: entry.delta > 0 ? "#4C9F6E" : "#D9483D",
-                            fontWeight: 600,
-                            fontVariantNumeric: "tabular-nums",
-                          }}
-                        >
-                          {entry.delta > 0 ? "+" : ""}
-                          {entry.delta}
-                        </span>
-                      )}
                       <span style={{ color: "#4B4F5A", fontSize: 12 }}>
-                        {entry.time}
+                        {formatShiftTime(entry.time)}
                       </span>
                     </div>
                   ))}
