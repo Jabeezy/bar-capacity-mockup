@@ -13,7 +13,7 @@ import {
 // gives near-instant updates.
 const LIVE_SAFETY_POLL_MS = 20000;
 
-const MAX_CAPACITY = 200;
+const MAX_CAPACITY = 162;
 const ADD_STAFF_NAME = "Name 1"; // attributed on every "+ Add people" tap
 const REMOVE_STAFF_NAME = "Name 2"; // attributed on every "− Remove people" tap
 const VENUE_NAME = "The Compass";
